@@ -83,20 +83,22 @@ def rebalance(context):
     tradable_matrix=(1-td_ST)*(1-td_suspension)*td_over1year
     context.history_tradable.append(tradable_matrix)
     # 用在市公司因子值的均值填充NaN
-    f=context.factor.loc[context.td,:].values
-    f_value=f[tradable_matrix==1]
-    f[np.isnan(f)]=np.nanmean(f_value)
-    context.history_factor.append(f)
-    f_value=f[tradable_matrix==1]   # 获取更新后的可交易因子值
+    f=context.factor.loc[context.td,:]
+    f_rank=f.rank(method='first').values   # 使用rank排序，防止组间分布不均
+    f_value=f_rank[tradable_matrix==1]
+    f[np.isnan(f_rank)]=np.nanmean(f.values)
+    f_rank[np.isnan(f_rank)]=np.nanmean(f_value)
+    context.history_factor.append(f.values)
+    f_value=f_rank[tradable_matrix==1]   # 获取更新后的可交易因子值
     # 计算权重矩阵
     context.pos_matrix=np.zeros((context.N,context.group_num+1))
     for g in range(context.group_num):
         V_min=np.percentile(f_value,100*g/context.group_num,interpolation='linear')
         V_max=np.percentile(f_value,100*(g+1)/context.group_num,interpolation='linear')
         if g+1 == context.group_num:
-            context.pos_matrix[:,g][(f>=V_min) & (f<=V_max)]=context.net_value_left[g]
+            context.pos_matrix[:,g][(f_rank>=V_min) & (f_rank<=V_max)]=context.net_value_left[g]
         else:
-            context.pos_matrix[:,g][(f>=V_min) & (f<V_max)]=context.net_value_left[g]
+            context.pos_matrix[:,g][(f_rank>=V_min) & (f_rank<V_max)]=context.net_value_left[g]
     context.pos_matrix[:,context.group_num][tradable_matrix==1]=context.net_value_left[context.group_num]
     # 去掉不在市的权重
     context.pos_matrix=context.pos_matrix*tradable_matrix.reshape([context.N,1])
