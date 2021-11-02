@@ -14,7 +14,7 @@ class Context:
         self.td=None    # 此时日期：%Y-%m-%d
         self.N=None  # 资产数目
         self.group_num=group_num # 因子组数
-        self.freq=frequency # 调仓频率:日频'd',周频'w',月频'm',财报公布期(5,9,11月)'f'
+        self.freq=frequency # 调仓频率:日频'd',周频'w',月频'm',财报公布期(5,9,11月)'f',每n个交易日n(int)
         self.pos_matrix=None   # 仓位矩阵
         self.net_value=None # 各组+基准净值
         self.net_value_left=None    # 当前各组合剩余净值
@@ -60,6 +60,8 @@ def initialize(context):
     context.factor=pd.read_csv(context.Path_factor,parse_dates=[0],index_col=[0])
     context.factor=context.factor[context.start_date:context.end_date]
         
+    if isinstance(context.freq,int):
+        context.last_td_mark=0
     context.N=context.factor.shape[1]
     # 净值矩阵初始化
     group_col=['group '+str(i+1) for i in range(context.group_num)]
@@ -138,7 +140,9 @@ def summary(context):
     fig = plt.figure(figsize=(12, 9), dpi=100)
     x_label=[t.strftime('%Y-%m-%d') for t in context.history_time[:-1]]
     plt.bar(x_label,IC)
-    if context.freq == 'd':
+    if isinstance(context.freq,int):
+        plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(int(252/(2*context.freq))))
+    elif context.freq == 'd':
         plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(126))
     elif context.freq == 'w':
         plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(26))
@@ -151,7 +155,7 @@ def summary(context):
     plt.xticks(rotation=-45)
     plt.title(title)
     #plt.show()
-    plt.savefig('./result/IC_'+factor_name+'_'+context.freq+'.png')
+    plt.savefig('./result/IC_'+factor_name+'_'+str(context.freq)+'.png')
     # 多空图
     fig = plt.figure(figsize=(12, 9), dpi=100)    
     ax = fig.add_subplot(2, 1, 1)
@@ -166,7 +170,7 @@ def summary(context):
     plt.xticks(rotation=-45)
     ax.legend()
     #plt.show()
-    plt.savefig('./result/L-S_'+factor_name+'_'+context.freq+'.png')
+    plt.savefig('./result/L-S_'+factor_name+'_'+str(context.freq)+'.png')
 
 def handle_data(context):
     if not context.last_td_mark:
@@ -182,7 +186,11 @@ def handle_data(context):
 
         rebalance_month=[5,9,11]
         # 调仓
-        if context.freq == 'd':
+        if isinstance(context.freq,int) and context.last_td_mark == context.freq:
+            # 固定交易日换仓
+            rebalance(context)
+            context.last_td_mark=0
+        elif context.freq == 'd':
             # 每日换仓
             rebalance(context)
         elif context.freq == 'w' and (context.td.strftime('%W') != context.last_td_mark):
@@ -200,8 +208,10 @@ def run(context):
     for td in context.trade_day:
         context.td=td
         handle_data(context)
-        # 周/月更改标记，用于判断是否换仓
-        if context.freq == 'w':
+        # 更改标记，用于判断是否换仓
+        if isinstance(context.freq,int):
+            context.last_td_mark+=1
+        elif context.freq == 'w':
             context.last_td_mark=td.strftime('%W')
         else:
             context.last_td_mark=td.month
@@ -209,9 +219,9 @@ def run(context):
 
 
 
-file_path="D:/study/compile/research/factor_database/corporation_factor/profit_factor/"
+file_path="..."
 file_list=os.listdir(file_path)
-#file_list=['roe.csv',]
+#file_list=[]
 for f in file_list:
-    context=Context('20170101', '20210630', 10, 'f', file_path+f)
+    context=Context('20170101', '20210630', 10, 10, file_path+f)
     run(context)
