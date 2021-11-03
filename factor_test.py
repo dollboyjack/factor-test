@@ -19,6 +19,7 @@ class Context:
         self.net_value=None # 各组+基准净值
         self.net_value_left=None    # 当前各组合剩余净值
         self.last_td_mark=None
+        self.history={}    # 历史换仓数据：换仓时点、换仓次数、IC、因子值、价格、股票池、仓位
 
         self.Path_trade_day=None
         self.trade_day=None # 交易日数据
@@ -68,11 +69,8 @@ def initialize(context):
     group_col.append('benchmark')
     context.net_value=pd.DataFrame(index=context.trade_day,columns=group_col)
     context.net_value.iloc[0,:]=1   # 设置初始各组资产为1
-    # 存储数据计算IC
-    context.history_factor=[]
-    context.history_price=[]
-    context.history_tradable=[]
-    context.history_time=[]
+    # 历史换仓数据
+    context.history={'td':[],'times':0,'IC':[],'factor':[],'price':[],'tradable':[],'position':[]}
 
 def rebalance(context):
     # 筛选股票池，去掉ST、上市不满一年、不在市的股票
@@ -81,14 +79,12 @@ def rebalance(context):
     td_over1year=context.over1year.loc[context.td,:].values
     # 得到可交易股票的矩阵
     tradable_matrix=(1-td_ST)*(1-td_suspension)*td_over1year
-    context.history_tradable.append(tradable_matrix)
     # 用在市公司因子值的均值填充NaN
     f=context.factor.loc[context.td,:]
     f_rank=f.rank(method='first').values   # 使用rank排序，防止组间分布不均
     f_value=f_rank[tradable_matrix==1]
     f[np.isnan(f_rank)]=np.nanmean(f.values)
     f_rank[np.isnan(f_rank)]=np.nanmean(f_value)
-    context.history_factor.append(f.values)
     f_value=f_rank[tradable_matrix==1]   # 获取更新后的可交易因子值
     # 计算权重矩阵
     context.pos_matrix=np.zeros((context.N,context.group_num+1))
@@ -105,43 +101,51 @@ def rebalance(context):
     # 组内等权
     context.pos_matrix=context.pos_matrix/np.count_nonzero(context.pos_matrix,axis=0)
     # 每只股票的仓位=现金比例/股票价格
-    context.history_price.append(context.price.loc[context.td,:].values)
-    context.history_time.append(context.td)
     for g in range(context.group_num+1):
         context.pos_matrix[:,g]=context.pos_matrix[:,g]/context.price.loc[context.td,:].values
     context.pos_matrix[np.isnan(context.pos_matrix)]=0
 
-def calc_IC_ICIR(context):
-    IC=[]
-    nums_rebalance=len(context.history_tradable)
-    for i in range(1,nums_rebalance):
-        stock_return=(context.history_price[i]-context.history_price[i-1])/context.history_price[i]
-        stock_return=stock_return[context.history_tradable[i-1]==1]
+    # 存储换仓数据
+    context.history['td'].append(context.td)
+    context.history['times']+=1
+    context.history['factor'].append(f.values)
+    context.history['price'].append(context.price.loc[context.td,:].values)
+    context.history['tradable'].append(tradable_matrix)
+    context.history['position'].append(context.pos_matrix)
+    # 计算上次换仓IC
+    if context.last_td_mark:
+        # 初次建仓不计算
+        stock_return=(context.history['price'][-1]-context.history['price'][-2])/context.history['price'][-2]
+        stock_return=stock_return[context.history['tradable'][-2]==1]
         stock_return[np.isnan(stock_return)]=0  # i或i-1任一期价格不存在设定收益率为0
-        factor=context.history_factor[i-1][context.history_tradable[i-1]==1]
+        factor=context.history['factor'][-2][context.history['tradable'][-2]==1]
         corr=np.corrcoef(stock_return,factor)
-        IC.append(corr[0,1])
-    ICIR=np.mean(IC)/np.std(IC, ddof=1)
-    T=nums_rebalance-1
-    return IC,ICIR,T
+        context.history['IC'].append(corr[0,1])
+
+def MaxDrawdown(series):
+    # 计算最大回撤
+    drawdown=np.zeros(len(series))
+    for i in range(len(series)-1):
+        drawdown[i]=(series.iloc[i]-series.iloc[i+1:].min())/series.iloc[i]
+    return drawdown.max()
 
 def summary(context):
     # 可视化
     plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
     plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
 
-    IC,ICIR,T=calc_IC_ICIR(context)
-    title='IC均值:'+'{:.2f}'.format(100*np.mean(IC))+\
-        '%   IC最大值:'+'{:.2f}'.format(100*np.max(IC))+\
-        '%   IC最小值:'+'{:.2f}'.format(100*np.min(IC))+\
-        '%   IC标准差:'+'{:.2f}'.format(100*np.std(IC, ddof=1))+\
-        '%   ICIR:'+'{:.2f}'.format(ICIR)+\
-        '   T统计量:'+'{:.2f}'.format(ICIR*np.sqrt(T-1))
+    ICIR=np.mean(context.history['IC'])/np.std(context.history['IC'], ddof=1)
+    title='IC均值:'+'{:.2%}'.format(np.mean(context.history['IC']))+\
+        '   IC最大值:'+'{:.2%}'.format(np.max(context.history['IC']))+\
+        '   IC最小值:'+'{:.2%}'.format(np.min(context.history['IC']))+\
+        '   IC标准差:'+'{:.2%}'.format(np.std(context.history['IC'], ddof=1))+\
+        '   ICIR:'+'{:.2f}'.format(ICIR)+\
+        '   T统计量:'+'{:.2f}'.format(ICIR*np.sqrt(context.history['times']-2))
     factor_name=context.Path_factor.split('/')[-1].split('.')[0]
     # IC图
     fig = plt.figure(figsize=(12, 9), dpi=100)
-    x_label=[t.strftime('%Y-%m-%d') for t in context.history_time[:-1]]
-    plt.bar(x_label,IC)
+    x_label=[t.strftime('%Y-%m-%d') for t in context.history['td'][:-1]]
+    plt.bar(x_label,context.history['IC'])
     if isinstance(context.freq,int):
         plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(int(252/(2*context.freq))))
     elif context.freq == 'd':
@@ -158,19 +162,28 @@ def summary(context):
     plt.title(title)
     #plt.show()
     plt.savefig('./result/IC_'+factor_name+'_'+str(context.freq)+'.png')
+
     # 多空图
+    LS=context.net_value['group 10']-context.net_value['group 1']
+    td_num=len(context.trade_day)
+    Drawdown=MaxDrawdown(1+LS)   # 最大回撤
+    year_return=(1+LS[context.end_date])**(252/td_num)-1 # 年化收益率
+    title='多空总收益率:'+'{:.2%}'.format(LS[context.end_date])+\
+        '   年化收益率:'+'{:.2%}'.format(year_return)+\
+        '   最大回撤:'+'{:.2%}'.format(Drawdown)
     fig = plt.figure(figsize=(12, 9), dpi=100)    
     ax = fig.add_subplot(2, 1, 1)
     ax.bar(context.net_value.columns,context.net_value.iloc[-1,:]-1,color=10*['cyan']+['silver'])
     ax.yaxis.set_major_formatter(ticker.PercentFormatter(xmax=1, decimals=2))
     plt.grid(axis="y")
     ax = fig.add_subplot(2, 1, 2)
-    ax.plot(context.net_value['group 10']-context.net_value['group 1'],label='long-short')
+    ax.plot(LS,label='long-short')
     ax.plot(context.net_value['benchmark']-1,label='benchmark')
     ax.yaxis.set_major_formatter(ticker.PercentFormatter(xmax=1, decimals=2))
     plt.grid(axis="y")
     plt.xticks(rotation=-45)
     ax.legend()
+    fig.suptitle(title)
     #plt.show()
     plt.savefig('./result/L-S_'+factor_name+'_'+str(context.freq)+'.png')
 
