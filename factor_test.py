@@ -1,6 +1,5 @@
 from datetime import datetime,timedelta
-import matplotlib.pyplot as plt
-from matplotlib import ticker
+from Summary import *
 import pandas as pd
 import numpy as np
 import dateutil
@@ -19,7 +18,7 @@ class Context:
         self.net_value=None # 各组+基准净值
         self.net_value_left=None    # 当前各组合剩余净值
         self.last_td_mark=None
-        self.history={}    # 历史换仓数据：换仓时点、换仓次数、IC、因子值、价格、股票池、仓位
+        self.history={}    # 历史换仓数据：换仓时点、换仓次数、IC、Rank_IC、因子值、价格、股票池、仓位
 
         self.Path_trade_day=None
         self.trade_day=None # 交易日数据
@@ -70,7 +69,7 @@ def initialize(context):
     context.net_value=pd.DataFrame(index=context.trade_day,columns=group_col)
     context.net_value.iloc[0,:]=1   # 设置初始各组资产为1
     # 历史换仓数据
-    context.history={'td':[],'times':0,'IC':[],'factor':[],'price':[],'tradable':[],'position':[]}
+    context.history={'td':[],'times':0,'IC':[],'Rank_IC':[],'factor':[],'price':[],'tradable':[],'position':[]}
 
 def rebalance(context):
     # 筛选股票池，去掉ST、上市不满一年、不在市的股票
@@ -121,71 +120,8 @@ def rebalance(context):
         factor=context.history['factor'][-2][context.history['tradable'][-2]==1]
         corr=np.corrcoef(stock_return,factor)
         context.history['IC'].append(corr[0,1])
-
-def MaxDrawdown(series):
-    # 计算最大回撤
-    drawdown=np.zeros(len(series))
-    for i in range(len(series)-1):
-        drawdown[i]=(series.iloc[i]-series.iloc[i+1:].min())/series.iloc[i]
-    return drawdown.max()
-
-def summary(context):
-    # 可视化
-    plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
-    plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
-
-    ICIR=np.mean(context.history['IC'])/np.std(context.history['IC'], ddof=1)
-    title='IC均值:'+'{:.2%}'.format(np.mean(context.history['IC']))+\
-        '   IC最大值:'+'{:.2%}'.format(np.max(context.history['IC']))+\
-        '   IC最小值:'+'{:.2%}'.format(np.min(context.history['IC']))+\
-        '   IC标准差:'+'{:.2%}'.format(np.std(context.history['IC'], ddof=1))+\
-        '   ICIR:'+'{:.2f}'.format(ICIR)+\
-        '   T统计量:'+'{:.2f}'.format(ICIR*np.sqrt(context.history['times']-2))
-    factor_name=context.Path_factor.split('/')[-1].split('.')[0]
-    # IC图
-    fig = plt.figure(figsize=(12, 9), dpi=100)
-    x_label=[t.strftime('%Y-%m-%d') for t in context.history['td'][:-1]]
-    plt.bar(x_label,context.history['IC'])
-    if isinstance(context.freq,int):
-        plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(int(252/(2*context.freq))))
-    elif context.freq == 'd':
-        plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(126))
-    elif context.freq == 'w':
-        plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(26))
-    elif context.freq == 'm':
-        plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(6))
-    elif context.freq == 'f':
-        plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(1))
-    plt.gca().yaxis.set_major_formatter(ticker.PercentFormatter(xmax=1, decimals=2))
-    plt.grid(axis="y")
-    plt.xticks(rotation=-45)
-    plt.title(title)
-    #plt.show()
-    plt.savefig('./result/IC_'+factor_name+'_'+str(context.freq)+'.png')
-
-    # 多空图
-    LS=context.net_value['group 10']-context.net_value['group 1']
-    td_num=len(context.trade_day)
-    Drawdown=MaxDrawdown(1+LS)   # 最大回撤
-    year_return=(1+LS[context.end_date])**(252/td_num)-1 # 年化收益率
-    title='多空总收益率:'+'{:.2%}'.format(LS[context.end_date])+\
-        '   年化收益率:'+'{:.2%}'.format(year_return)+\
-        '   最大回撤:'+'{:.2%}'.format(Drawdown)
-    fig = plt.figure(figsize=(12, 9), dpi=100)    
-    ax = fig.add_subplot(2, 1, 1)
-    ax.bar(context.net_value.columns,context.net_value.iloc[-1,:]-1,color=10*['cyan']+['silver'])
-    ax.yaxis.set_major_formatter(ticker.PercentFormatter(xmax=1, decimals=2))
-    plt.grid(axis="y")
-    ax = fig.add_subplot(2, 1, 2)
-    ax.plot(LS,label='long-short')
-    ax.plot(context.net_value['benchmark']-1,label='benchmark')
-    ax.yaxis.set_major_formatter(ticker.PercentFormatter(xmax=1, decimals=2))
-    plt.grid(axis="y")
-    plt.xticks(rotation=-45)
-    ax.legend()
-    fig.suptitle(title)
-    #plt.show()
-    plt.savefig('./result/L-S_'+factor_name+'_'+str(context.freq)+'.png')
+        rank_corr=np.corrcoef(np.argsort(np.argsort(stock_return)),np.argsort(np.argsort(factor)))
+        context.history['Rank_IC'].append(rank_corr[0,1])
 
 def handle_data(context):
     if not context.last_td_mark:
@@ -232,11 +168,11 @@ def run(context):
             context.last_td_mark=td.month
     summary(context)
 
-
-
+    
+    
 file_path="..."
 file_list=os.listdir(file_path)
 #file_list=[]
 for f in file_list:
-    context=Context('20170101', '20210630', 10, 10, file_path+f)
+    context=Context('20100101', '20210930', 10, 'f', file_path+f)
     run(context)
