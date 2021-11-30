@@ -146,13 +146,13 @@ def run(context):
 
 
 
-#file_path="D:/study/compile/research/factor_database/corporation_factor/profit_factor/"
+#file_path="***"
 ##file_list=os.listdir(file_path)
 #file_list=['roe.csv',]
 #for f in file_list:
 #    context=Context('20100101', '20210930', 10, 'f', file_path+f)
 #    run(context)
 
-path="D:/study/compile/research/factor_database/入选因子/mom12.csv"
+path="***"
 context=Context('20100101', '20210930', 10, 'm', path)
 run(context)
