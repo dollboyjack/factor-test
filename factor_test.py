@@ -1,4 +1,5 @@
 from datetime import datetime,timedelta
+from multiprocessing import Pool
 from Summary import *
 import pandas as pd
 import numpy as np
@@ -35,28 +36,18 @@ class Context:
 
 def initialize(context):
     # 读取信息
-    context.Path_trade_day="./data/trade_day.csv"
-    context.Path_price="./data/ElementaryFactor-复权收盘价.csv"
-    context.Path_ST="./data/ElementaryFactor-ST.csv"
-    context.Path_suspension="./data/ElementaryFactor-停复牌.csv"
-    context.Path_over1year="./data/ElementaryFactor-上市超过一年.csv"
+    context.Path_trade_day="D:/study/compile/research/data/financial_data/trade_day.csv"
+    context.Path_price='D:/study/compile/research/data/IndustryIndexFactor-收盘价.csv'
     # 交易日信息
     context.trade_day=pd.read_csv(context.Path_trade_day,parse_dates=['datetime'],index_col=['datetime'])
     context.trade_day=context.trade_day[context.start_date:context.end_date].index
-    # 股价信息
-    context.price=pd.read_csv(context.Path_price,parse_dates=['datetime'],index_col=['datetime'])
+    # 行业指数信息
+    context.price=pd.read_csv(context.Path_price,index_col=0,parse_dates=[0])
     context.price=context.price[context.start_date:context.end_date]
-    # ST股
-    context.ST=pd.read_csv(context.Path_ST,parse_dates=['datetime'],index_col=['datetime'])
-    context.ST=context.ST[context.start_date:context.end_date]
-    # 是否停牌
-    context.suspension=pd.read_csv(context.Path_suspension,parse_dates=['datetime'],index_col=['datetime'])
-    context.suspension=context.suspension[context.start_date:context.end_date]
-    # 上市满一年
-    context.over1year=pd.read_csv(context.Path_over1year,parse_dates=['datetime'],index_col=['datetime'])
-    context.over1year=context.over1year[context.start_date:context.end_date]
+    context.price.columns=[x for x in range(1,31)]
+    context.price.drop(30,axis=1, inplace=True) # 去掉综合金融行业的数据
 
-    # 因子信息，“日期*code”形式
+    # 因子信息，“日期*行业”形式
     context.factor=pd.read_csv(context.Path_factor,parse_dates=[0],index_col=[0])
     context.factor=context.factor[context.start_date:context.end_date]
         
@@ -69,59 +60,44 @@ def initialize(context):
     context.net_value=pd.DataFrame(index=context.trade_day,columns=group_col)
     context.net_value.iloc[0,:]=1   # 设置初始各组资产为1
     # 历史换仓数据
-    context.history={'td':[],'times':0,'IC':[],'Rank_IC':[],'factor':[],'price':[],'tradable':[],'position':[]}
+    context.history={'td':[],'times':0,'IC':[],'Rank_IC':[],'factor':[],'price':[],'position':[]}
 
 def rebalance(context):
-    # 筛选股票池，去掉ST、上市不满一年、不在市的股票
-    td_ST=context.ST.loc[context.td,:].values
-    td_suspension=context.suspension.loc[context.td,:].values
-    td_over1year=context.over1year.loc[context.td,:].values
-    # 得到可交易股票的矩阵
-    tradable_matrix=(1-td_ST)*(1-td_suspension)*td_over1year
-    # 用在市公司因子值的均值填充NaN
+    # 用均值填充NaN
     f=context.factor.loc[context.td,:]
+    f[pd.isna(f)]=f.mean()
     f_rank=f.rank(method='first').values   # 使用rank排序，防止组间分布不均
-    f_value=f_rank[tradable_matrix==1]
-    f[np.isnan(f_rank)]=np.nanmean(f.values)
-    f_rank[np.isnan(f_rank)]=np.nanmean(f_value)
-    f_value=f_rank[tradable_matrix==1]   # 获取更新后的可交易因子值
     # 计算权重矩阵
     context.pos_matrix=np.zeros((context.N,context.group_num+1))
     for g in range(context.group_num):
-        V_min=np.percentile(f_value,100*g/context.group_num,interpolation='linear')
-        V_max=np.percentile(f_value,100*(g+1)/context.group_num,interpolation='linear')
+        V_min=np.percentile(f_rank,100*g/context.group_num,interpolation='linear')
+        V_max=np.percentile(f_rank,100*(g+1)/context.group_num,interpolation='linear')
         if g+1 == context.group_num:
             context.pos_matrix[:,g][(f_rank>=V_min) & (f_rank<=V_max)]=context.net_value_left[g]
         else:
             context.pos_matrix[:,g][(f_rank>=V_min) & (f_rank<V_max)]=context.net_value_left[g]
-    context.pos_matrix[:,context.group_num][tradable_matrix==1]=context.net_value_left[context.group_num]
-    # 去掉不在市的权重
-    context.pos_matrix=context.pos_matrix*tradable_matrix.reshape([context.N,1])
+    context.pos_matrix[:,context.group_num]=context.net_value_left[context.group_num]
     # 组内等权
     context.pos_matrix=context.pos_matrix/np.count_nonzero(context.pos_matrix,axis=0)
-    # 每只股票的仓位=现金比例/股票价格
+    # 每个行业的仓位=现金比例/股票价格
     for g in range(context.group_num+1):
         context.pos_matrix[:,g]=context.pos_matrix[:,g]/context.price.loc[context.td,:].values
-    context.pos_matrix[np.isnan(context.pos_matrix)]=0
 
     # 存储换仓数据
     context.history['td'].append(context.td)
     context.history['times']+=1
     context.history['factor'].append(f.values)
     context.history['price'].append(context.price.loc[context.td,:].values)
-    context.history['tradable'].append(tradable_matrix)
     context.history['position'].append(context.pos_matrix)
     # 计算上次换仓IC
     if context.last_td_mark:
         # 初次建仓不计算
         stock_return=(context.history['price'][-1]-context.history['price'][-2])/context.history['price'][-2]
-        stock_return=stock_return[context.history['tradable'][-2]==1]
-        stock_return[np.isnan(stock_return)]=0  # i或i-1任一期价格不存在设定收益率为0
-        factor=context.history['factor'][-2][context.history['tradable'][-2]==1]
-        corr=np.corrcoef(stock_return,factor)
-        context.history['IC'].append(corr[0,1])
-        rank_corr=np.corrcoef(np.argsort(np.argsort(stock_return)),np.argsort(np.argsort(factor)))
-        context.history['Rank_IC'].append(rank_corr[0,1])
+        factor=context.history['factor'][-2]
+        corr=pd.DataFrame([stock_return,factor]).T.corr(method='pearson')
+        context.history['IC'].append(corr.loc[0,1])
+        rank_corr=pd.DataFrame([stock_return,factor]).T.corr(method='spearman')
+        context.history['Rank_IC'].append(rank_corr.loc[0,1])
 
 def handle_data(context):
     if not context.last_td_mark:
@@ -168,11 +144,15 @@ def run(context):
             context.last_td_mark=td.month
     summary(context)
 
-    
-    
-file_path="..."
-file_list=os.listdir(file_path)
-#file_list=[]
-for f in file_list:
-    context=Context('20100101', '20210930', 10, 'f', file_path+f)
-    run(context)
+
+
+#file_path="D:/study/compile/research/factor_database/corporation_factor/profit_factor/"
+##file_list=os.listdir(file_path)
+#file_list=['roe.csv',]
+#for f in file_list:
+#    context=Context('20100101', '20210930', 10, 'f', file_path+f)
+#    run(context)
+
+path="D:/study/compile/research/factor_database/入选因子/mom12.csv"
+context=Context('20100101', '20210930', 10, 'm', path)
+run(context)
